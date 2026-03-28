@@ -26,8 +26,40 @@ def log_info(msg): print(f"{Colors.BLUE}[INFO]{Colors.RESET} {msg}")
 def log_ok(msg):   print(f"{Colors.GREEN}[OK]{Colors.RESET} {msg}")
 def log_warn(msg): print(f"{Colors.YELLOW}[WARN]{Colors.RESET} {msg}")
 def log_error(msg):print(f"{Colors.RED}[ERROR]{Colors.RESET} {msg}")
-def log_send(msg): print(f"{Colors.CYAN}[>>]{Colors.RESET} {msg}")
-def log_recv(msg): print(f"{Colors.CYAN}[<<]{Colors.RESET} {msg}")
+def log_send(msg): 
+    if isinstance(msg, bytes):
+        msg = hexdump(msg, simple=True)
+    print(f"{Colors.CYAN}[>>]{Colors.RESET} {msg}")
+def log_recv(msg):
+    if isinstance(msg, bytes):
+        msg = hexdump(msg, simple=True)
+    print(f"{Colors.CYAN}[<<]{Colors.RESET} {msg}")
+
+# =========================
+# HEXDUMP
+# =========================
+def hexdump(data: bytes, cols: int = 16, simple: bool = False) -> str:
+    """Generate hexdump of bytes"""
+    if simple:
+        # Simple format for logs
+        hex_part = ' '.join(f'{b:02x}' for b in data[:32])
+        if len(data) > 32:
+            hex_part += ' ...'
+        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data[:32])
+        if len(data) > 32:
+            ascii_part += '...'
+        return f"{hex_part}  |{ascii_part}|"
+    
+    # Full hexdump format
+    result = []
+    for i in range(0, len(data), cols):
+        chunk = data[i:i+cols]
+        hex_part = ' '.join(f'{b:02x}' for b in chunk)
+        hex_part = hex_part.ljust(cols * 3)
+        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+        result.append(f"{i:08x}  {hex_part}  |{ascii_part}|")
+    
+    return '\n'.join(result)
 
 # =========================
 # PACK / UNPACK
@@ -38,51 +70,176 @@ def u64(x): return struct.unpack("<Q", x)[0]
 def p32(x): return struct.pack("<I", x)
 def u32(x): return struct.unpack("<I", x)[0]
 
-_PATTERN_CACHE = {}
+def p16(x): return struct.pack("<H", x)
+def u16(x): return struct.unpack("<H", x)[0]
+
+def p8(x): return struct.pack("<B", x)
+def u8(x): return struct.unpack("<B", x)[0]
+
+PATTERN_CACHE = {}
+
+def _xor_encode(data, key):
+    """XOR encoding"""
+    return bytes([b ^ key for b in data])
+
+def _add_encode(data, key):
+    """ADD encoding"""
+    return bytes([(b + key) & 0xff for b in data])
+
+def _sub_encode(data, key):
+    """SUB encoding"""
+    return bytes([(b - key) & 0xff for b in data])
+
+def _has_bad(data, bad_bytes):
+    """Check for bad bytes"""
+    for b in bad_bytes:
+        if b in data:
+            return True
+    return False
+
+# Decoder stubs
+def _arm64_decoder(key, size):
+    """ARM64 decoder stub"""
+    return bytes([
+        0x00, 0x00, 0x00, 0x10,  # adr x0, encoded
+        key, 0x00, 0x80, 0x52,   # mov w1, #key
+        size & 0xff, 0x00, 0x80, 0x52,  # mov w2, #size
+        0x23, 0x00, 0x40, 0x39,  # ldrb w3, [x0]
+        0x63, 0x04, 0x01, 0x4a,  # eor w3, w3, w1
+        0x23, 0x00, 0x00, 0x39,  # strb w3, [x0]
+        0x00, 0x04, 0x00, 0x91,  # add x0, x0, #1
+        0x42, 0x04, 0x00, 0xf1,  # subs x2, x2, #1
+        0xe1, 0xff, 0xff, 0x54,  # b.ne decode_loop
+        0x00, 0x00, 0x1f, 0xd6   # br x0
+    ])
+
+def _amd64_decoder(key, size):
+    """AMD64 decoder stub"""
+    return bytes([
+        0xeb, 0x1e,                    # jmp short start
+        0x5e,                          # pop rsi
+        0x31, 0xc9,                    # xor ecx, ecx
+        0x48, 0x83, 0xc1, 0x01,        # add rcx, 1
+        0x48, 0x01, 0xce,              # add rsi, rcx
+        0x80, 0x36, key,               # xor byte [rsi], key
+        0x48, 0xff, 0xc9,              # dec rcx
+        0x75, 0xf5,                    # jnz loop
+        0xff, 0xe6,                    # jmp rsi
+        0xe8, 0xdd, 0xff, 0xff, 0xff,  # call pop
+    ])
+
+def _x86_decoder(key, size):
+    """x86 decoder stub"""
+    return bytes([
+        0xeb, 0x16,                    # jmp short start
+        0x5e,                          # pop esi
+        0x31, 0xc9,                    # xor ecx, ecx
+        0x83, 0xc1, 0x01,              # add ecx, 1
+        0x01, 0xce,                    # add esi, ecx
+        0x80, 0x36, key,               # xor byte [esi], key
+        0x49,                          # dec ecx
+        0x75, 0xf9,                    # jnz loop
+        0xff, 0xe6,                    # jmp esi
+        0xe8, 0xe5, 0xff, 0xff, 0xff,  # call pop
+    ])
+
+def _get_decoder(arch):
+    decoders = {
+        "arm64": _arm64_decoder,
+        "amd64": _amd64_decoder,
+        "x86": _x86_decoder,
+    }
+    return decoders.get(arch)
+
+def encode_shellcode(shellcode, arch, bad_bytes, fallback=True):
+    strategies = [
+        ("xor", _xor_encode, range(1, 256)),
+        ("add", _add_encode, range(1, 256)),
+        ("sub", _sub_encode, range(1, 256)),
+    ]
+
+    best_result = None
+    best_removed = 0
+    best_encoder = None
+    best_key = None
+
+    for name, encoder, keys in strategies:
+        for key in keys:
+            if key in bad_bytes:
+                continue
+
+            encoded = encoder(shellcode, key)
+            remaining_bad = [b for b in bad_bytes if b in encoded]
+            removed = len(bad_bytes) - len(remaining_bad)
+
+            decoder_func = _get_decoder(arch)
+            if decoder_func:
+                decoder = decoder_func(key, len(encoded))
+                if not _has_bad(decoder, bad_bytes):
+                    forged = decoder + encoded
+                    remaining_final = [b for b in bad_bytes if b in forged]
+                    removed_final = len(bad_bytes) - len(remaining_final)
+
+                    if removed_final > best_removed:
+                        best_result = forged
+                        best_removed = removed_final
+                        best_encoder = name
+                        best_key = key
+
+                        if removed_final == len(bad_bytes):
+                            return (best_result, "perfect",
+                                   f"Perfect! {name} encoding with key 0x{key:02x}")
+
+    if best_result and fallback:
+        remaining = len([b for b in bad_bytes if b in best_result])
+        return (best_result, "partial",
+                f"Partial success: removed {best_removed}/{len(bad_bytes)} bad bytes using {best_encoder}")
+
+    return (None, "failed", "No encoding strategy found")
 
 # =========================
 # PATTERN CREATE (CYCLIC)
 # =========================
 def pattern_create(size: int) -> bytes:
-    if size in _PATTERN_CACHE:
-        return _PATTERN_CACHE[size]
-    
+    if size in PATTERN_CACHE:
+        return PATTERN_CACHE[size]
+
     charset = (string.ascii_lowercase +
                string.ascii_uppercase +
                string.digits)
-    
+
     pattern = bytearray()
-    
+
     for a in charset:
         for b in charset:
             for c in charset:
                 pattern += bytes([ord(a), ord(b), ord(c)])
                 if len(pattern) >= size:
                     result = bytes(pattern[:size])
-                    _PATTERN_CACHE[size] = result
+                    PATTERN_CACHE[size] = result
                     return result
-    
-    result = bytes(pattern[:size])
-    _PATTERN_CACHE[size] = result
-    return result
 
+    result = bytes(pattern[:size])
+    PATTERN_CACHE[size] = result
+    return result
 
 # =========================
 # PATTERN OFFSET (CYCLIC FIND)
 # =========================
-def pattern_offset(value: Union[int, bytes], 
-                   size: int = 10000, 
+def pattern_offset(value: Union[int, bytes],
+                   size: int = 10000,
                    arch: int = 64) -> Optional[int]:
-    
+
     pattern = pattern_create(size)
-    
+
     if isinstance(value, int):
         fmt = "<I" if arch == 32 else "<Q"
         value = struct.pack(fmt, value)
     elif not isinstance(value, bytes):
-        raise TypeError(f"value must be int or bytes, received: {type(value)}")    
-    window_sizes = [8, 4, 3]  
+        raise TypeError(f"value must be int or bytes, received: {type(value)}")
     
+    window_sizes = [8, 4, 3]
+
     for window in window_sizes:
         if len(value) >= window:
             for i in range(len(value) - window + 1):
@@ -90,16 +247,14 @@ def pattern_offset(value: Union[int, bytes],
                 idx = pattern.find(chunk)
                 if idx != -1:
                     return idx
-    
+
     if arch == 64 and len(value) >= 8:
         value_le = struct.pack('<Q', struct.unpack('>Q', value[:8])[0])
         idx = pattern.find(value_le)
         if idx != -1:
             return idx
-    
+
     return None
-
-
 
 # =========================
 # ANSI CLEAN
@@ -211,7 +366,6 @@ class Remote:
             log_info("Connection closed")
         except:
             pass
-
 
 # =========================
 # PROCESS (PTY LOCAL)
@@ -326,3 +480,4 @@ class Process:
             pass
 
         log_info("Process closed cleanly")
+
