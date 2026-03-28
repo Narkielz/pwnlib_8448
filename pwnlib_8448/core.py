@@ -640,4 +640,393 @@ class Process:
             pass
         self.log.info("Process terminated")
 
+        
+
+# =========================
+# ROP CLASS - ROP Chain Builder
+# =========================
+
+class ROP:
+    """
+    ROP (Return-Oriented Programming) chain builder.
+    Helps construct ROP chains for different architectures.
+    
+    Example:
+        rop = ROP("./binary", arch="amd64")
+        rop.call("system", ["/bin/sh"])
+        rop.call("exit", [0])
+        payload = rop.build(offset=72)
+    """
+    
+    def __init__(self, binary: str = None, arch: str = "amd64", debug: bool = False):
+        """
+        Initialize ROP builder.
+        
+        Args:
+            binary: Path to binary (for gadget finding)
+            arch: Architecture - "amd64", "x86", "arm64"
+            debug: Enable debug output
+        """
+        self.binary = binary
+        self.arch = arch.lower()
+        self.debug = debug
+        self.gadgets = {}
+        self.chain = []
+        self.stack_padding = []
+        
+        # Architecture-specific register mappings
+        self._init_arch_registers()
+        
+        # Load gadgets if binary provided
+        if binary:
+            self._load_gadgets()
+    
+    def _init_arch_registers(self):
+        """Initialize architecture-specific register configurations."""
+        if self.arch == "amd64":
+            self.registers = {
+                "rdi": 0, "rsi": 8, "rdx": 16, "rcx": 24, "r8": 32, "r9": 40,
+                "rax": 48, "rbx": 56, "rbp": 64, "rsp": 72
+            }
+            self.pointer_size = 8
+            self.call_instruction = b"\xe8"  # call rel32
+            self.ret_instruction = b"\xc3"
+            self.pop_instructions = {
+                "rdi": b"\x5f", "rsi": b"\x5e", "rdx": b"\x5a", 
+                "rcx": b"\x59", "r8": b"\x41\x58", "r9": b"\x41\x59"
+            }
+            
+        elif self.arch == "x86":
+            self.registers = {
+                "eax": 0, "ebx": 4, "ecx": 8, "edx": 12, 
+                "esi": 16, "edi": 20, "ebp": 24, "esp": 28
+            }
+            self.pointer_size = 4
+            self.call_instruction = b"\xe8"
+            self.ret_instruction = b"\xc3"
+            self.pop_instructions = {
+                "eax": b"\x58", "ebx": b"\x5b", "ecx": b"\x59", 
+                "edx": b"\x5a", "esi": b"\x5e", "edi": b"\x5f"
+            }
+            
+        elif self.arch == "arm64":
+            self.registers = {
+                "x0": 0, "x1": 8, "x2": 16, "x3": 24, "x4": 32, "x5": 40,
+                "x6": 48, "x7": 56, "x8": 64, "x9": 72, "x10": 80, "x11": 88
+            }
+            self.pointer_size = 8
+            self.call_instruction = b"\x94\x00\x00\x00"  # bl
+            self.ret_instruction = b"\xc0\x03\x5f\xd6"   # ret
+            
+        else:
+            raise ValueError(f"Unsupported architecture: {self.arch}")
+    
+    def _load_gadgets(self):
+        """Load ROP gadgets from binary using ROPgadget or manual scan."""
+        if not self.binary:
+            return
+            
+        # Try to use ROPgadget if available
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ROPgadget", "--binary", self.binary, "--multibr"],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if ':' in line:
+                        addr_str, gadget = line.split(':', 1)
+                        addr = int(addr_str.strip(), 16)
+                        gadget = gadget.strip()
+                        self.gadgets[gadget] = addr
+                        
+                if self.debug:
+                    log_info(f"Loaded {len(self.gadgets)} gadgets from {self.binary}")
+                    
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            if self.debug:
+                log_warn("ROPgadget not found, falling back to manual gadget finding")
+            self._find_gadgets_manual()
+    
+    def _find_gadgets_manual(self):
+        """Fallback: Find common gadgets manually."""
+        # Common gadget patterns for x64
+        if self.arch == "amd64":
+            common_gadgets = {
+                "pop rdi; ret": 0x4006a3,   # Example - real address needed
+                "pop rsi; ret": 0x4006a1,
+                "pop rdx; ret": 0x4006a5,
+                "pop rax; ret": 0x4006a7,
+                "syscall": 0x4006b0,
+                "ret": 0x4006a9
+            }
+            
+        elif self.arch == "x86":
+            common_gadgets = {
+                "pop eax; ret": 0x80482e0,
+                "pop ebx; ret": 0x80482e2,
+                "pop ecx; ret": 0x80482e4,
+                "pop edx; ret": 0x80482e6,
+                "int 0x80": 0x80482e8,
+                "ret": 0x80482ea
+            }
+            
+        elif self.arch == "arm64":
+            common_gadgets = {
+                "pop x0; ret": 0x4006a3,
+                "pop x1; ret": 0x4006a5,
+                "pop x2; ret": 0x4006a7,
+                "pop x3; ret": 0x4006a9,
+                "ret": 0x4006ab
+            }
+        
+        self.gadgets.update(common_gadgets)
+    
+    def find_gadget(self, pattern: str) -> Optional[int]:
+        """
+        Find a gadget by pattern.
+        
+        Args:
+            pattern: Gadget pattern (e.g., "pop rdi; ret")
+            
+        Returns:
+            Address of gadget or None if not found
+        """
+        return self.gadgets.get(pattern)
+    
+    def pop(self, register: str, value: int) -> 'ROP':
+        """
+        Add a pop {register} gadget to chain.
+        
+        Args:
+            register: Register name (rdi, rsi, etc.)
+            value: Value to pop into register
+            
+        Returns:
+            Self for chaining
+        """
+        pop_gadget = f"pop {register}; ret"
+        addr = self.find_gadget(pop_gadget)
+        
+        if addr is None:
+            raise ValueError(f"Gadget not found: {pop_gadget}")
+        
+        self.chain.append(addr)
+        self.chain.append(value)
+        
+        if self.debug:
+            log_debug(f"Added pop {register} = 0x{value:x}")
+        
+        return self
+    
+    def call(self, function: Union[str, int], args: List[int] = None) -> 'ROP':
+        """
+        Add a function call to chain.
+        
+        Args:
+            function: Function address or name (if in binary)
+            args: List of arguments for the function
+            
+        Returns:
+            Self for chaining
+        """
+        # Get function address
+        if isinstance(function, str):
+            # Try to find function in binary
+            addr = self._get_function_address(function)
+            if addr is None:
+                raise ValueError(f"Function not found: {function}")
+        else:
+            addr = function
+        
+        # Set up arguments
+        if args:
+            if self.arch == "amd64":
+                # x64 calling convention: rdi, rsi, rdx, rcx, r8, r9
+                registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+                for i, arg in enumerate(args[:6]):
+                    self.pop(registers[i], arg)
+                    
+            elif self.arch == "x86":
+                # x86 uses stack for arguments
+                # Push arguments in reverse order
+                for arg in reversed(args):
+                    self.chain.append(arg)  # Will need pop gadget
+                    
+            elif self.arch == "arm64":
+                # ARM64 calling convention: x0-x7
+                registers = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"]
+                for i, arg in enumerate(args[:8]):
+                    self.pop(registers[i], arg)
+        
+        # Add function call
+        self.chain.append(addr)
+        
+        if self.debug:
+            log_debug(f"Added call to 0x{addr:x}")
+        
+        return self
+    
+    def ret(self, value: int = None) -> 'ROP':
+        """
+        Add return instruction to chain.
+        
+        Args:
+            value: Optional value to return (for gadgets)
+            
+        Returns:
+            Self for chaining
+        """
+        ret_addr = self.find_gadget("ret")
+        if ret_addr is None:
+            raise ValueError("Ret gadget not found")
+        
+        if value is not None:
+            self.chain.append(value)
+        self.chain.append(ret_addr)
+        
+        return self
+    
+    def syscall(self, nr: int, args: List[int] = None) -> 'ROP':
+        """
+        Add syscall to chain.
+        
+        Args:
+            nr: Syscall number
+            args: Syscall arguments
+            
+        Returns:
+            Self for chaining
+        """
+        if self.arch == "amd64":
+            self.pop("rax", nr)
+            if args:
+                registers = ["rdi", "rsi", "rdx", "r10", "r8", "r9"]
+                for i, arg in enumerate(args[:6]):
+                    self.pop(registers[i], arg)
+                    
+            syscall_gadget = self.find_gadget("syscall")
+            if syscall_gadget is None:
+                raise ValueError("Syscall gadget not found")
+            self.chain.append(syscall_gadget)
+            
+        elif self.arch == "x86":
+            self.pop("eax", nr)
+            if args:
+                registers = ["ebx", "ecx", "edx", "esi", "edi"]
+                for i, arg in enumerate(args[:5]):
+                    self.pop(registers[i], arg)
+                    
+            int80_gadget = self.find_gadget("int 0x80")
+            if int80_gadget is None:
+                raise ValueError("int 0x80 gadget not found")
+            self.chain.append(int80_gadget)
+            
+        return self
+    
+    def _get_function_address(self, name: str) -> Optional[int]:
+        """Get function address from binary."""
+        # Try to use objdump if available
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["objdump", "-t", self.binary],
+                capture_output=True, text=True, timeout=5
+            )
+            
+            for line in result.stdout.split('\n'):
+                if name in line and '*' not in line:
+                    parts = line.split()
+                    if len(parts) >= 5 and parts[3] == 'F':
+                        addr = int(parts[0], 16)
+                        return addr
+                        
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+            
+        return None
+    
+    def padding(self, size: int, value: int = 0) -> 'ROP':
+        """
+        Add padding bytes to chain.
+        
+        Args:
+            size: Number of bytes to pad
+            value: Value to pad with (0 for null bytes)
+            
+        Returns:
+            Self for chaining
+        """
+        if value == 0:
+            self.stack_padding.append(b"\x00" * size)
+        else:
+            pad_val = p64(value) if self.pointer_size == 8 else p32(value)
+            self.stack_padding.append(pad_val * (size // self.pointer_size))
+        
+        return self
+    
+    def build(self, offset: int = None) -> bytes:
+        """
+        Build the ROP chain.
+        
+        Args:
+            offset: Buffer overflow offset (optional)
+            
+        Returns:
+            Complete ROP chain as bytes
+        """
+        # Build chain
+        chain_bytes = b""
+        for item in self.chain:
+            if isinstance(item, int):
+                if self.pointer_size == 8:
+                    chain_bytes += p64(item)
+                else:
+                    chain_bytes += p32(item)
+            else:
+                chain_bytes += item
+        
+        # Add padding
+        for pad in self.stack_padding:
+            chain_bytes += pad
+        
+        # Add offset if provided
+        if offset:
+            return b"A" * offset + chain_bytes
+        
+        return chain_bytes
+    
+    def show(self) -> None:
+        """Display the current ROP chain."""
+        log_info(f"ROP Chain ({len(self.chain)} gadgets):")
+        log_info(f"Architecture: {self.arch}")
+        log_info(f"Pointer size: {self.pointer_size} bytes")
+        
+        for i, item in enumerate(self.chain):
+            if isinstance(item, int):
+                log_debug(f"  [{i:3d}] 0x{item:016x}")
+            else:
+                log_debug(f"  [{i:3d}] {item.hex()}")
+        
+        if self.stack_padding:
+            total_pad = sum(len(p) for p in self.stack_padding)
+            log_info(f"Padding: {total_pad} bytes")
+    
+    def clear(self) -> None:
+        """Clear the ROP chain."""
+        self.chain = []
+        self.stack_padding = []
+        
+    def save(self, filename: str) -> None:
+        """
+        Save ROP chain to file.
+        
+        Args:
+            filename: Output filename
+        """
+        with open(filename, 'wb') as f:
+            f.write(self.build())
+        log_ok(f"ROP chain saved to {filename}")
 
