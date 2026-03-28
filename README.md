@@ -64,19 +64,19 @@
 
 ## 📦 Installation
 
-### From GitHub (recommended)
+#### From GitHub (recommended)
 
 ```bash
 pip install git+https://github.com/Narkielz/pwnlib_8448.git
 ```
 
-From GitLab (fallback)
+#### From GitLab (fallback)
 
 ```bash
 pip install git+https://gitlab.com/Narkiel/pwnlib_8448.git
 ```
 
-Local development
+#### Local development
 
 ```bash
 git clone https://github.com/Narkielz/pwnlib_8448.git
@@ -84,7 +84,7 @@ cd pwnlib_8448
 pip install -e .
 ```
 
-Verify Installation
+#### Verify Installation
 
 ```python
 python -c "from pwnlib_8448 import Process; print('✅ pwnlib_8448 installed successfully!')"
@@ -92,7 +92,7 @@ python -c "from pwnlib_8448 import Process; print('✅ pwnlib_8448 installed suc
 
 ---
 
-🚀 Quick Start
+## 🚀 Quick Start
 
 Get started with a simple buffer overflow exploit using ROP:
 
@@ -144,7 +144,7 @@ log_warn("Bad byte detected")
 log_error("Exploit failed")
 ```
 
-Example Output:
+### Example Output:
 
 ```bash
 [00:00.01] ● Starting exploit
@@ -153,7 +153,7 @@ Example Output:
 [00:00.04] ✗ Exploit failed
 ```
 
-Send/Receive Logging
+### Send/Receive Logging
 
 When sending or receiving data, the library automatically logs hex and ASCII representation:
 
